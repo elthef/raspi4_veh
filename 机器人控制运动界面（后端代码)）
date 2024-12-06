@@ -1,0 +1,121 @@
+from flask import Flask, render_template, Response, request
+from picamera2 import Picamera2
+import cv2
+from base_ctrl import BaseController
+
+app = Flask(__name__)
+
+# 设置机器人控制器（使用树莓派特定的代码）
+def is_raspberry_pi5():
+    with open('/proc/cpuinfo', 'r') as file:
+        for line in file:
+            if 'Model' in line:
+                if 'Raspberry Pi 5' in line:
+                    return True
+                else:
+                    return False
+
+# 根据树莓派型号设置正确的控制器
+if is_raspberry_pi5():
+    base = BaseController('/dev/ttyAMA0', 115200)
+else:
+    base = BaseController('/dev/serial0', 115200)
+
+# 摄像头设置，生成视频流
+def gen_frames():
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_video_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+    picam2.start()
+
+    while True:
+        frame = picam2.capture_array()
+
+        # 转换 BGR 到 RGB，避免颜色问题
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # 将图像编码为JPEG格式
+        ret, buffer = cv2.imencode('.jpg', frame_rgb)
+        frame = buffer.tobytes()
+
+        # 生成视频流
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+# 首页路由，处理动作
+@app.route("/", methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        if request.form.get('action1') == 'VALUE1':
+            pass  # 执行某个动作
+        elif request.form.get('action2') == 'VALUE2':
+            pass  # 执行另一个动作
+        else:
+            pass  # 未知的动作
+    elif request.method == 'GET':
+        return render_template('1.html')  # 渲染模板
+
+# 视频流路由，返回实时视频流
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# 运动控制路由
+@app.route('/move/<direction>')
+def move(direction):
+    if direction == 'forward':
+        base.send_command({"T": 1, "L": 0.2, "R": 0.2})
+    elif direction == 'backward':
+        base.send_command({"T": 1, "L": -0.2, "R": -0.2})
+    elif direction == 'left':
+        base.send_command({"T": 1, "L": -0.2, "R": 0.2})
+    elif direction == 'right':
+        base.send_command({"T": 1, "L": 0.2, "R": -0.2})
+    elif direction == 'stop':
+        base.send_command({"T": 1, "L": 0, "R": 0})
+
+    return '', 204  # 返回204响应，表示无内容
+
+# 云台控制路由
+@app.route('/gimbal/<direction>')
+def gimbal(direction):
+    if direction == 'up':
+        base.gimbal_ctrl(0, 45, 0, 0)
+    elif direction == 'down':
+        base.gimbal_ctrl(0, -45, 0, 0)
+    elif direction == 'left':
+        base.gimbal_ctrl(-45, 0, 0, 0)
+    elif direction == 'right':
+        base.gimbal_ctrl(45, 0, 0, 0)
+    elif direction == 'stop':
+        base.gimbal_ctrl(0, 0, 0, 0)
+    elif direction == 'reset':  # 回到原点
+        base.gimbal_ctrl(0, 0, 0, 0)  # 回到原点，假设原点是(0, 0)
+        print("云台已回到原点")
+    return '', 204
+
+# LED控制路由
+@app.route('/led/<action>')
+def led_control(action):
+    if action == 'on':
+        # 设置LED为打开状态
+        base.lights_ctrl(255, 0)  # IO4_PWM = 255, IO5_PWM = 0 表示打开LED
+    elif action == 'off':
+        # 设置LED为关闭状态
+        base.lights_ctrl(0, 0)  # 关闭LED
+    return '', 204  # 返回204响应，表示无内容
+
+# LED闪烁控制路由
+@app.route('/led/blink')
+def led_blink():
+    # 让LED闪烁的简单实现：间隔一段时间打开和关闭
+    import time
+    for _ in range(5):  # 闪烁5次
+        base.lights_ctrl(255, 0)  # 开灯
+        time.sleep(0.5)  # 等待0.5秒
+        base.lights_ctrl(0, 0)  # 关灯
+        time.sleep(0.5)  # 等待0.5秒
+    return '', 204  # 返回204响应，表示无内容
+
+# 启动应用
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
