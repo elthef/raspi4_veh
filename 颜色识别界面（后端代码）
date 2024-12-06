@@ -1,0 +1,275 @@
+from flask import Flask, render_template, Response, request, redirect, url_for
+from picamera2 import Picamera2
+import cv2
+import numpy as np
+from base_ctrl import BaseController
+import time
+
+# 创建Flask应用
+app = Flask(__name__)
+
+# 全局变量，控制颜色识别的状态
+color_detection_active = False
+
+# 设置机器人控制器（根据树莓派型号选择正确的串口）
+def is_raspberry_pi5():
+    with open('/proc/cpuinfo', 'r') as file:
+        for line in file:
+            if 'Model' in line:
+                if 'Raspberry Pi 5' in line:
+                    return True  # 如果是树莓派5，返回True
+                else:
+                    return False  # 如果不是树莓派5，返回False
+ 
+        # 摄像头设置，生成视频流
+def org_gen_frames():
+    picam2 = Picamera2()
+    
+    picam2.configure(picam2.create_video_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+    picam2.start()
+
+    while True:
+        frame = picam2.capture_array()
+
+        # 转换 BGR 到 RGB，避免颜色问题
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # 将图像编码为JPEG格式
+        ret, buffer = cv2.imencode('.jpg', frame_rgb)
+        frame = buffer.tobytes()
+
+        # 生成视频流
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+# 根据树莓派型号选择正确的串口来控制机器人
+if is_raspberry_pi5():
+    base = BaseController('/dev/ttyAMA0', 115200)
+else:
+    base = BaseController('/dev/serial0', 115200)
+
+# 定义颜色范围（HSV）
+blue_lower = np.array([100, 150, 50])  # 蓝色范围的下限
+blue_upper = np.array([140, 255, 235])  # 蓝色范围的上限
+
+# 调整后的红色范围（注意红色是跨越两个区间的）
+red_lower1 = np.array([0, 120, 100])  # 红色范围的下限1（低色调）
+red_upper1 = np.array([10, 255, 255])  # 红色范围的上限1（低色调）
+red_lower2 = np.array([170, 120, 100])  # 红色范围的下限2（高色调）
+red_upper2 = np.array([180, 255, 210])  # 红色范围的上限2（高色调）
+
+green_lower = np.array([40, 50, 40])  # 绿色范围的下限
+green_upper = np.array([70, 255, 190])  # 绿色范围的上限
+
+min_radius = 12  # 检测物体的最小半径
+
+# 判断物体是否为球形
+def is_circular(c, min_ratio=0.8):
+    (x, y), radius = cv2.minEnclosingCircle(c)
+    area = cv2.contourArea(c)
+    circle_area = np.pi * radius ** 2
+    ratio = area / circle_area
+    return ratio > min_ratio
+    
+# 控制LED闪烁的函数
+def blink_led():
+    for _ in range(3):
+        IO4_PWM = 255  # 打开LED
+        IO5_PWM = 255
+        base.lights_ctrl(IO4_PWM, IO5_PWM)  # 控制LED状态
+        time.sleep(0.5)  # 延时0.5秒
+        IO4_PWM = 0  # 关闭LED
+        IO5_PWM = 0
+        base.lights_ctrl(IO4_PWM, IO5_PWM)
+        time.sleep(0.5)
+
+# 控制机器人运动的函数
+def move_robot(direction):
+    speed = 0.2  # 设定速度
+    if direction == 'forward':  # 前进
+        base.send_command({"T": 1, "L": speed, "R": speed})
+    elif direction == 'backward':  # 后退
+        base.send_command({"T": 1, "L": -speed, "R": -speed})
+    elif direction == 'left':  # 左转
+        base.send_command({"T": 1, "L": -speed, "R": speed})
+    elif direction == 'right':  # 右转
+        base.send_command({"T": 1, "L": speed, "R": -speed})
+    elif direction == 'stop':  # 停止
+        base.send_command({"T": 1, "L": 0, "R": 0})
+
+# 全局变量，用来存储检测到的颜色
+detected_color = None
+
+# 检测红色球的函数
+def detect_red_ball(c, frame):
+    global detected_color
+    ((x, y), radius) = cv2.minEnclosingCircle(c)  # 计算最小外接圆
+    if radius > min_radius and is_circular(c):  # 如果半径大于最小值且物体是球形
+        detected_color = "Red"  # 更新检测到的颜色
+        cv2.circle(frame, (int(x), int(y)), int(radius), (0, 0, 255), 2)  # 绘制红色圆圈
+        cv2.putText(frame, "Red", (int(x - radius), int(y - radius)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)  # 在图像上标注文字
+
+# 检测绿色球的函数
+def detect_green_ball(c, frame):
+    global detected_color
+    ((x, y), radius) = cv2.minEnclosingCircle(c)
+    if radius > min_radius and is_circular(c):  # 只有在物体是球形时才检测
+        detected_color = "Green"  # 更新检测到的颜色
+        cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 0), 2)  # 绘制绿色圆圈
+        cv2.putText(frame, "Green", (int(x - radius), int(y - radius)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+# 检测蓝色球的函数
+def detect_blue_ball(c, frame):
+    global detected_color
+    ((x, y), radius) = cv2.minEnclosingCircle(c)
+    if radius > min_radius and is_circular(c):  # 只有在物体是球形时才检测
+        detected_color = "Blue"  # 更新检测到的颜色
+        cv2.circle(frame, (int(x), int(y)), int(radius), (255, 0, 0), 2)  # 绘制蓝色圆圈
+        cv2.putText(frame, "Blue", (int(x - radius), int(y - radius)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+# 摄像头设置，生成视频流
+def gen_frames():
+
+    global color_detection_active
+    
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_video_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+    picam2.start()
+
+    while True:
+        #print("gen_frame")
+        frame = picam2.capture_array()
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 将BGR格式转换为RGB格式
+        #frame1_rgb= frame_rgb
+        
+        if color_detection_active:  # 仅在颜色检测激活时处理视频帧
+            
+            hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2HSV)  # 将图像转换为HSV色彩空间
+            blurred = cv2.GaussianBlur(hsv, (5, 5), 0)  # 高斯模糊去噪
+
+            # 对每个颜色范围创建掩码
+            mask_blue = cv2.inRange(blurred, blue_lower, blue_upper)
+            mask_red1 = cv2.inRange(blurred, red_lower1, red_upper1)
+            mask_red2 = cv2.inRange(blurred, red_lower2, red_upper2)
+            mask_red = cv2.bitwise_or(mask_red1, mask_red2)  # 合并两个红色范围
+            mask_green = cv2.inRange(blurred, green_lower, green_upper)
+
+            # 对掩码进行形态学处理，去除噪声
+            mask_red = cv2.erode(mask_red, None, iterations=2)
+            mask_red = cv2.dilate(mask_red, None, iterations=2)
+            mask_blue = cv2.erode(mask_blue, None, iterations=1)
+            mask_blue = cv2.dilate(mask_blue, None, iterations=1)
+            mask_green = cv2.erode(mask_green, None, iterations=1)
+            mask_green = cv2.dilate(mask_green, None, iterations=1)
+
+            # 查找每个颜色的轮廓
+            cnts_green = cv2.findContours(mask_green.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts_blue = cv2.findContours(mask_blue.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts_red = cv2.findContours(mask_red.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # 如果检测到绿色球
+            for c in cnts_green[0]:
+                detect_green_ball(c, frame_rgb)
+            # 如果检测到蓝色球
+            for c in cnts_blue[0]:
+                detect_blue_ball(c, frame_rgb)
+            # 如果检测到红色球
+            for c in cnts_red[0]:
+                detect_red_ball(c, frame_rgb)
+
+        ret, buffer = cv2.imencode('.jpg', frame_rgb)  # 将图像编码为JPEG格式
+        frame = buffer.tobytes()  # 转换为字节数据
+        yield (b'--frame\r\n'
+              b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n\r\n')  # 返回视频流
+
+# 修改 stop_color_detection 路由
+@app.route('/stop_color_detection', methods=['POST'])
+def stop_color_detection():
+    global color_detection_active
+    color_detection_active = False  # 停止颜色检测
+    return redirect(url_for('index'))  # 重定向回主页
+
+# 修改 toggle_color_detection 路由
+@app.route('/toggle_color_detection')
+def toggle_color_detection():
+    global color_detection_active
+    color_detection_active = not color_detection_active  # 切换颜色检测的状态
+    return redirect(url_for('index'))  # 重定向回主页
+
+# 主路由，显示页面
+@app.route('/')
+def index():
+    return render_template('2.html', color=detected_color)
+
+# 视频流路由，返回实时视频流
+@app.route('/video_feed')
+def video_feed():
+    #gen_frames()
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/start_color_detection', methods=['POST'])
+def start_color_detection():
+    global color_detection_active
+    color_detection_active = True  # 启动颜色检测
+    return redirect(url_for('index'))
+
+# 运动控制路由
+@app.route('/move/<direction>')
+def move(direction):
+    if direction == 'forward':
+        base.send_command({"T": 1, "L": 0.2, "R": 0.2})
+    elif direction == 'backward':
+        base.send_command({"T": 1, "L": -0.2, "R": -0.2})
+    elif direction == 'left':
+        base.send_command({"T": 1, "L": -0.2, "R": 0.2})
+    elif direction == 'right':
+        base.send_command({"T": 1, "L": 0.2, "R": -0.2})
+    elif direction == 'stop':
+        base.send_command({"T": 1, "L": 0, "R": 0})
+
+    return '', 204  # 返回204响应，表示无内容
+
+# 云台控制路由
+@app.route('/gimbal/<direction>')
+def gimbal(direction):
+    if direction == 'up':
+        base.gimbal_ctrl(0, 45, 0, 0)
+    elif direction == 'down':
+        base.gimbal_ctrl(0, -45, 0, 0)
+    elif direction == 'left':
+        base.gimbal_ctrl(-45, 0, 0, 0)
+    elif direction == 'right':
+        base.gimbal_ctrl(45, 0, 0, 0)
+    elif direction == 'stop':
+        base.gimbal_ctrl(0, 0, 0, 0)
+    elif direction == 'reset':  # 回到原点
+        base.gimbal_ctrl(0, 0, 0, 0)  # 回到原点，假设原点是(0, 0)
+        print("云台已回到原点")
+    return '', 204
+    
+# LED控制路由
+@app.route('/led/<action>')
+def led_control(action):
+    if action == 'on':
+        # 设置LED为打开状态
+        base.lights_ctrl(255, 0)  # IO4_PWM = 255, IO5_PWM = 0 表示打开LED
+    elif action == 'off':
+        # 设置LED为关闭状态
+        base.lights_ctrl(0, 0)  # 关闭LED
+    return '', 204  # 返回204响应，表示无内容
+
+# LED闪烁控制路由
+@app.route('/led/blink')
+def led_blink():
+    # 让LED闪烁的简单实现：间隔一段时间打开和关闭
+    import time
+    for _ in range(5):  # 闪烁5次
+        base.lights_ctrl(255, 0)  # 开灯
+        time.sleep(0.5)  # 等待0.5秒
+        base.lights_ctrl(0, 0)  # 关灯
+        time.sleep(0.5)  # 等待0.5秒
+    return '', 204  # 返回204响应，表示无内容
+
+# 启动Flask应用
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
