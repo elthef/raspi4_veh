@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control and Color Detection</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #0a74da, #00c6ff);
+            color: #ecf0f1;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center; 
+            height: 100vh;
+            overflow: hidden;
+            animation: backgroundAnimation 8s infinite ease-in-out;
+        }
+
+        @keyframes backgroundAnimation {
+            0% { background: linear-gradient(135deg, #0a74da, #00c6ff); }
+            50% { background: linear-gradient(135deg, #00c6ff, #1abc9c); }
+            100% { background: linear-gradient(135deg, #0a74da, #00c6ff); }
+        }
+
+        .container {
+            display: flex;
+            width: 90%;
+            height: 90%;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            width: 220px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+        }
+
+        .controls button {
+            background: linear-gradient(145deg, #2980b9, #3498db);
+            border: none;
+            padding: 20px;
+            border-radius: 12px;
+            font-size: 24px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.4s ease;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+            margin-bottom: 15px;
+            width: 100%;
+            transform: scale(1);
+        }
+
+        .controls button:hover {
+            background: linear-gradient(145deg, #3498db, #2980b9);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
+            transform: scale(1.05);
+        }
+
+        .video-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.7);
+        }
+
+        #video {
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            border-radius: 15px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            object-fit: contain;
+            transition: all 0.3s ease;
+        }
+
+        #video:hover {
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+        }
+
+        .button-container button {
+            font-size: 18px;
+            padding: 15px 25px;
+            border-radius: 8px;
+            background-color: #1abc9c;
+            border: none;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease, box-shadow 0.3s ease;
+            width: 100%;
+        }
+
+        .button-container button:hover {
+            background-color: #16a085;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .button-container button:active {
+            background-color: #1abc9c;
+            transform: translateY(1px);
+        }
+
+        @media (max-width: 800px) {
+            .container {
+                flex-direction: column;
+                gap: 30px;
+            }
+
+            .sidebar {
+                width: 100%;
+                box-shadow: none;
+                margin-bottom: 20px;
+            }
+
+            .video-container {
+                width: 100%;
+                margin-bottom: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Color Detection Control</h2>
+            <p id="color-status">Detected Color: <strong>{{ color }}</strong></p>
+            <button onclick="toggleColorDetection()">Start Color Detection</button>
+
+            <h2>Robot Control</h2>
+            <button onclick="sendMovementCommand('forward')"><i class="fas fa-arrow-up"></i> 前进</button>
+            <button onclick="sendMovementCommand('left')"><i class="fas fa-arrow-left"></i> 左转</button>
+            <button onclick="sendMovementCommand('right')"><i class="fas fa-arrow-right"></i> 右转</button>
+            <button onclick="sendMovementCommand('backward')"><i class="fas fa-arrow-down"></i> 后退</button>
+            <button onclick="sendMovementCommand('stop')"><i class="fas fa-stop"></i> 停止</button>
+        </div>
+
+        <div class="video-container">
+            <img id="video" src="{{ url_for('video_feed') }}" alt="Robot Video Stream">
+        </div>
+
+        <div class="sidebar">
+            <h2>Gimbal Control</h2>
+            <button onclick="sendGimbalCommand('up')"><i class="fas fa-arrow-up"></i> 云台上升</button>
+            <button onclick="sendGimbalCommand('down')"><i class="fas fa-arrow-down"></i> 云台下降</button>
+            <button onclick="sendGimbalCommand('left')"><i class="fas fa-arrow-left"></i> 云台左转</button>
+            <button onclick="sendGimbalCommand('right')"><i class="fas fa-arrow-right"></i> 云台右转</button>
+            <button onclick="sendGimbalCommand('reset')"><i class="fas fa-sync"></i> 云台归位</button>
+
+            <h2>LED Control</h2>
+            <button onclick="toggleLED('on')"><i class="fas fa-lightbulb"></i> 打开LED</button>
+            <button onclick="toggleLED('off')"><i class="fas fa-lightbulb"></i> 关闭LED</button>
+            <button onclick="startBlinkingLED()"><i class="fas fa-sync-alt"></i> 闪烁LED</button>
+        </div>
+    </div>
+
+    <script>
+        let colorDetectionActive = false;
+
+        function toggleColorDetection() {
+            console.log("Toggling color detection...");
+            fetch('/toggle_color_detection', { method: 'GET' })
+                .then(response => response.json())
+                .then(data => {
+                    colorDetectionActive = data.status === "active";
+                    document.querySelector("button:nth-child(1)").innerText = colorDetectionActive ? "Stop Color Recognition" : "Start Color Detection";
+                    document.getElementById('video').style.display = colorDetectionActive ? 'block' : 'none';
+                    if (colorDetectionActive) {
+                        sendMovementCommand('stop');
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        function stopColorDetection() {
+            console.log("Stopping color detection...");
+            fetch('/stop_color_detection', { method: 'GET' })
+                .then(response => response.json())
+                .then(data => {
+                    colorDetectionActive = false;
+                    document.querySelector("button:nth-child(1)").innerText = "Start Color Detection";
+                    document.getElementById('video').style.display = 'block';
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        function sendMovementCommand(direction) {
+            console.log(`Sending movement command for direction: ${direction}`);
+            fetch(`/move/${direction}`, { method: 'GET' });
+        }
+
+        function sendGimbalCommand(direction) {
+            console.log(`Sending gimbal command for direction: ${direction}`);
+            fetch(`/gimbal/${direction}`, { method: 'GET' });
+        }
+
+        function toggleLED(action) {
+            console.log(`Toggling LED with action: ${action}`);
+            fetch(`/led/${action}`, { method: 'GET' });
+        }
+
+        function startBlinkingLED() {
+            console.log("Starting LED blinking...");
+            fetch('/led/blink', { method: 'GET' });
+        }
+    </script>
+</body>
+</html>
